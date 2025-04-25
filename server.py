@@ -1,9 +1,8 @@
 import socket
 
-# A mock function to simulate retrieving IoT data from a database.
+
 def get_device_data(query):
-    # Here, you would query your database for real data based on the query.
-    # For simplicity, we'll just return some mock data based on the query.
+
     if "average moisture" in query:
         return "The average moisture inside the kitchen fridge in the last three hours is 55% RH."
     elif "average water consumption" in query:
