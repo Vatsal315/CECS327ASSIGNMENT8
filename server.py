@@ -1,48 +1,79 @@
+import os
 import socket
+import sys
+from contextlib import closing
+
+import psycopg2
+from iot_queries import (
+    avg_moisture_past_3h,
+    avg_water_per_cycle,
+    top_energy_consumer,
+)
+
+DEVICE_META = {
+    "005-c3y-7mv-144": {"name": "Kitchen Fridge",  "location": "Kitchen"},
+    "28fa6478-b03b-414f-b6d4-f07472643ad7": {"name": "Garage Fridge",   "location": "Garage"},
+    "8mc-1c2-lgd-6wn": {"name": "Smart Dishwasher", "location": "Kitchen"},
+}
+
+QUERY_HANDLERS = {
+    "what is the average moisture inside my kitchen fridge in the past three hours?": avg_moisture_past_3h,
+    "what is the average water consumption per cycle in my smart dishwasher?": avg_water_per_cycle,
+    "which device consumed more electricity among my three iot devices?": top_energy_consumer,
+}
+HELP_TEXT = "\n".join(f"• {q}" for q in QUERY_HANDLERS)
 
 
-def get_device_data(query):
+def open_db():
+    """Open NeonDB using either an env var or the hard-coded URI."""
+    uri = os.getenv(
+        "NEON_DB_URI",
+        "postgresql://neondb_owner:npg_DT7uBCk2cFQw@ep-tiny-fog-a59x42f5-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require",
+    )
+    return psycopg2.connect(uri)
 
-    if "average moisture" in query:
-        return "The average moisture inside the kitchen fridge in the last three hours is 55% RH."
-    elif "average water consumption" in query:
-        return "The average water consumption per cycle in the smart dishwasher is 4 gallons."
-    elif "device consumed more electricity" in query:
-        return "The refrigerator 1 consumed more electricity than the other devices."
-    return "Invalid query."
 
-def start_server(host, port):
-    try:
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.bind((host, port))
-        server_socket.listen(5)
-        print(f"Server started on {host}:{port}", flush=True)
+def serve(port: int) -> None:
+    with closing(open_db()) as db, socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", port))
+        sock.listen(1)
+        print(f"✅ Server ready on port {port}")
 
-        while True:
-            client_socket, client_address = server_socket.accept()
-            print(f"Connection established from {client_address}", flush=True)
-            
+        conn, addr = sock.accept()
+        with conn:
+            print("🟢 Client connected from", addr)
             while True:
-                data = client_socket.recv(1024)
-                if not data:
-                    print(f"No data received. Closing connection with {client_address}", flush=True)
+                raw = conn.recv(1024)
+                if not raw:
+                    print("🔴 Client disconnected")
                     break
-                message = data.decode()
-                print(f"Received from {client_address}: {message}", flush=True)
 
-                # Process the message based on the query
-                response = get_device_data(message)
-                client_socket.sendall(response.encode())
-            
-            client_socket.close()
-            print(f"Connection closed with {client_address}", flush=True)
-    except Exception as e:
-        print(f"Server error: {e}")
-    finally:
-        server_socket.close()
+                question = raw.decode().strip().lower()
+                handler = QUERY_HANDLERS.get(question)
+
+                if handler is None:
+                    conn.sendall(
+                        (
+                            "Sorry, this query cannot be processed.\n"
+                            "Please try one of the following:\n"
+                            f"{HELP_TEXT}"
+                        ).encode()
+                    )
+                    continue
+
+                try:
+                    answer = handler(db)
+                except Exception as exc:       
+                    answer = f"Internal error while processing your request: {exc}"
+
+                conn.sendall(answer.encode())
+
 
 if __name__ == "__main__":
-    host = input("Enter IP address to bind server (e.g., '0.0.0.0' for all interfaces): ")
-    port = int(input("Enter server Port: "))
-    start_server(host, port)
+    try:
+        port_number = int(sys.argv[1])
+    except (IndexError, ValueError):
+        print("Usage: python server.py <PORT>")
+        sys.exit(1)
 
+    serve(port_number)
